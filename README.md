@@ -80,7 +80,7 @@ All contributions and support should go to the Stremio team, whose work this is 
 
 - **Unofficial**: StremiBrew is a third-party project. It is not affiliated with, endorsed by or supported by Stremio, Sony Interactive Entertainment or Nintendo. All names, logos and trademarks belong to their owners. Please do not ask the Stremio team for help with it.
 - **No content**: StremiBrew does not host, provide, index or link to any film, series or other media, and includes no third-party add-ons. It only shows what the add-ons on your own Stremio account return. What you install and what you watch are your responsibility, and so is following the law where you live.
-- **Torrents are not supported**: StremiBrew has no torrent client, and at this period of time I do not plan to add one. Torrent and magnet streams cannot be played and are marked as such; only direct HTTP and HTTPS streams play.
+- **Torrents are not supported**: StremiBrew has no torrent client, I may plan to add one in the future. Torrent and magnet streams cannot be played and are marked as such; only direct HTTP and HTTPS streams play.
 - **Artwork**: The posters, logos and stills in the pictures above are freely licensed or in the public domain (see [the credits](docs/images/CREDITS.md)). The titles, ratings and release dates shown are sample data.
 - **Homebrew**: StremiBrew runs only on consoles that can already run homebrew. It contains no code from Sony or Nintendo and does nothing to enable piracy of games. Use it at your own risk: it comes with no warranty, as set out in the [license](LICENSE.md).
 
