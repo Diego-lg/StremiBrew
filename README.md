@@ -33,7 +33,7 @@ It currently supports the **PS5** and **Switch**, with features including:
 - Stremio account sign-in with a link code, with your library, add-ons and watch progress synced through the official `stremio-core`
 - Trailers that play automatically on the home screen as you move between titles (PS5)
 - Home board, Discover, Library, Calendar, Add-ons and search with the console's on-screen keyboard
-- Title pages with seasons, episodes and stream lists, for HTTP streams
+- Title pages with seasons, episodes and stream lists, for HTTP streams, and for torrents on the Switch (see [torrents](#torrents))
 - Player with seeking, scrubber previews, audio track selection, embedded and add-on subtitles with delay and styling, and resume
 - An animated UI, with transitions between screens and optional sound effects
 - 4K output and HDR-to-SDR tone mapping (PS5)
@@ -41,6 +41,14 @@ It currently supports the **PS5** and **Switch**, with features including:
 - A handheld UI that switches on automatically when undocked, and a stream quality limit (Switch)
 
 PS4 and Wii U support is planned in the near future.
+
+## Torrents
+
+On the Switch, a stream that carries a torrent plays instead of being marked unplayable. The client is in `shared/core-bridge/src/torrent`: it finds peers through the link's trackers (HTTP and UDP), asks them for the torrent's own description when the link is a magnet, fetches the pieces around where the player is reading, checks each piece against the hash the torrent gives, and keeps everything on the card in `sdmc:/switch/StremiBrew/torrents` — which is also what a link with no trackers plays from, when it was played before.
+
+**Downloaded films** in Settings → Playback says how much of the card that folder may take: nothing, 2 GB, 4 GB, 8 GB (the default), 16 GB or 32 GB. What is over it goes, the least recently watched film first, and never the one being watched. It is trimmed whenever the setting is lowered and whenever a film is closed, so the card gives the room back without anything being asked of it.
+
+What it does not do: seed (nothing is ever uploaded, so a leecher's ratio is not spoiled by this one and no port is opened), find peers without trackers (there is no DHT), or play a private torrent (BEP 27). The scrubbing pictures, which need a reader of their own, are not made for a torrent, so the scrub bar has no thumbnails on one. The PS5 port has no player for them yet, and says so rather than offering a stream it cannot open.
 
 ## Demonstration
 
@@ -80,7 +88,7 @@ All contributions and support should go to the Stremio team, whose work this is 
 
 - **Unofficial**: StremiBrew is a third-party project. It is not affiliated with, endorsed by or supported by Stremio, Sony Interactive Entertainment or Nintendo. All names, logos and trademarks belong to their owners. Please do not ask the Stremio team for help with it.
 - **No content**: StremiBrew does not host, provide, index or link to any film, series or other media, and includes no third-party add-ons. It only shows what the add-ons on your own Stremio account return. What you install and what you watch are your responsibility, and so is following the law where you live.
-- **Torrents are not supported**: StremiBrew has no torrent client, I may plan to add one in the future. Torrent and magnet streams cannot be played and are marked as such; only direct HTTP and HTTPS streams play.
+- **Torrents (Switch only)**: the Switch port has a torrent client, so a stream that carries one plays: the film is fetched piece by piece and playback starts on the pieces already there, carrying on as the rest arrives, and what has been played is kept on the card for next time. It downloads and does not seed, so it opens no port and no socket is ever opened to answer one; a private torrent is not played, its hashes being a secret between peers of one account. There is no DHT, so a link that arrives with no tracker, no web seed and nothing kept from a run before cannot find peers and says so. The PS5 port has no player for them yet, so its details list still marks them as it cannot play.
 - **Artwork**: The posters, logos and stills in the pictures above are freely licensed or in the public domain (see [the credits](docs/images/CREDITS.md)). The titles, ratings and release dates shown are sample data.
 - **Homebrew**: StremiBrew runs only on consoles that can already run homebrew. It contains no code from Sony or Nintendo and does nothing to enable piracy of games. Use it at your own risk: it comes with no warranty, as set out in the [license](LICENSE.md).
 

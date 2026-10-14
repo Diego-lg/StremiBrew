@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -147,6 +148,8 @@ class App
         bool calibration = true;
         // A setting for the most picture a stream may have (see set_quality_limit).
         bool quality_limit = false;
+        // A setting for how much room downloaded films may take (see set_torrent_limit).
+        bool torrents = false;
     };
     void set_features(const Features &features)
     {
@@ -163,6 +166,17 @@ class App
     void set_quality_handler(std::function<void(int height)> handler)
     {
         quality_handler_ = std::move(handler);
+    }
+    // How much room films downloaded from torrents may take (0 for no limit); what is
+    // over it is dropped from the cache. Set in Settings where the host has the setting
+    // (Features::torrents), which saves it when it changes.
+    void set_torrent_limit(std::uint64_t bytes)
+    {
+        torrent_limit_ = bytes;
+    }
+    void set_torrent_limit_handler(std::function<void(std::uint64_t bytes)> handler)
+    {
+        torrent_limit_handler_ = std::move(handler);
     }
     void set_display_handler(std::function<void(bool handheld_ui, bool automatic)> handler);
     void set_docked(bool docked)
@@ -399,6 +413,8 @@ class App
     Features features_;
     int quality_limit_ = 0;
     std::function<void(int)> quality_handler_;
+    std::uint64_t torrent_limit_ = 0;
+    std::function<void(std::uint64_t)> torrent_limit_handler_;
     bool display_options_ = false, handheld_ui_ = false, handheld_auto_ = true, docked_ = true;
     std::function<void(bool, bool)> display_handler_;
     // Whether the handheld UI is the one in use now.

@@ -46,6 +46,13 @@ std::int32_t stremio_core_library_set(const char *id, bool add);
 void stremio_core_forget_progress(const char *id);
 void stremio_core_calendar_load(std::int32_t year, std::uint32_t month);
 void stremio_core_discover_choose(std::int32_t kind, std::uint32_t index);
+// Where torrent data is kept between runs (torrent/mod.rs); it only records the folder.
+void stremio_torrent_set_cache(const char *path);
+// How much room films downloaded from torrents may take on the card, what the client is
+// holding to it, and what taking the difference off the card frees (torrent/mod.rs).
+void stremio_torrent_set_limit(std::uint64_t bytes);
+std::uint64_t stremio_torrent_limit(void);
+std::uint64_t stremio_torrent_trim(void);
 
 // system_fixes.c
 void clock_check_against_network(void);
@@ -62,9 +69,13 @@ constexpr char kLogFile[] = "sdmc:/switch/StremiBrew/log.txt";
 constexpr char kEarlierLogFile[] = "sdmc:/switch/StremiBrew/log-earlier.txt";
 constexpr char kStorageFolder[] = "sdmc:/switch/StremiBrew/core";
 constexpr char kImageFolder[] = "sdmc:/switch/StremiBrew/images";
+// What the torrent client has downloaded, kept so a film is not fetched a second time.
+constexpr char kTorrentFolder[] = "sdmc:/switch/StremiBrew/torrents";
 constexpr char kDisplayFile[] = "sdmc:/switch/StremiBrew/display.txt";
 constexpr char kSubtitleStyleFile[] = "sdmc:/switch/StremiBrew/subtitle-style.txt";
 constexpr char kQualityFile[] = "sdmc:/switch/StremiBrew/quality.txt";
+// How much room films downloaded from torrents may take on the card.
+constexpr char kTorrentLimitFile[] = "sdmc:/switch/StremiBrew/torrents.limit";
 // The window is the size of the television's picture; in the hand, the top left of it
 // that the console's own screen shows is drawn into instead.
 constexpr int kDockedWidth = 1920, kDockedHeight = 1080;
@@ -236,6 +247,30 @@ int ask_keyboard(const std::string &text, std::string &typed)
     typed = out;
     return 1;
 }
+
+// How much room films downloaded from torrents may take on the card, in bytes: the sizes
+// the setting steps through. Anything else in the file, or a file that cannot be read,
+// means the default, the way a picture size that is not one it shows falls back to 1080.
+std::uint64_t read_torrent_limit()
+{
+    constexpr std::uint64_t kDefault = std::uint64_t{8} << 30;
+    constexpr std::uint64_t kSizes[] = {0, std::uint64_t{2} << 30, std::uint64_t{4} << 30, kDefault,
+                                        std::uint64_t{16} << 30, std::uint64_t{32} << 30};
+    std::uint64_t bytes = kDefault;
+    if (std::FILE *file = std::fopen(kTorrentLimitFile, "r"))
+    {
+        unsigned long long stored = 0;
+        if (std::fscanf(file, "%llu", &stored) == 1)
+            for (const std::uint64_t size : kSizes)
+                if (stored == size)
+                {
+                    bytes = size;
+                    break;
+                }
+        std::fclose(file);
+    }
+    return bytes;
+}
 } // namespace
 
 int main()
@@ -275,8 +310,9 @@ int main()
             [](const std::string &address) { return stremio_core_fetch_failed(address.c_str()); });
         // Not on this console: trailers on the home screen (yet), and speech recognition.
         // Its own: a limit on how much picture a stream may have, which starts at what
-        // the console's screen and its television output can show.
-        app.set_features({false, false, true});
+        // the console's screen and its television output can show, and a limit on how much
+        // room films downloaded from torrents may take, which starts at 8 GB.
+        app.set_features({false, false, true, true});
         {
             int limit = 1080;
             if (std::FILE *file = std::fopen(kQualityFile, "r"))
@@ -293,6 +329,16 @@ int main()
                 std::fprintf(file, "%d\n", limit);
                 std::fclose(file);
             }
+        });
+        app.set_torrent_limit(read_torrent_limit());
+        app.set_torrent_limit_handler([](std::uint64_t bytes) {
+            if (std::FILE *file = std::fopen(kTorrentLimitFile, "w"))
+            {
+                std::fprintf(file, "%llu\n", static_cast<unsigned long long>(bytes));
+                std::fclose(file);
+            }
+            // The client is told too, so films go at once rather than at the next start.
+            stremio_torrent_set_limit(bytes);
         });
 
         // Everything asked of the core goes through the link's thread (see core_link.hpp).
@@ -446,6 +492,13 @@ int main()
             if (R_SUCCEEDED(network))
                 clock_check_against_network();
             mkdir(kStorageFolder, 0777);
+            // The folder is only recorded; the torrent client makes it when it is first needed.
+            stremio_torrent_set_cache(kTorrentFolder);
+            // Told the limit only now that the folder is known: a card filled while the
+            // setting was larger gives the difference back at once, not at some later change.
+            stremio_torrent_set_limit(read_torrent_limit());
+            log_line("torrents: %llu bytes given back",
+                     static_cast<unsigned long long>(stremio_torrent_trim()));
             if (stremio_core_init(kStorageFolder) != 0)
             {
                 char error[256] = {};

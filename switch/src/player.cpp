@@ -41,6 +41,19 @@ std::int64_t stremio_http_size(const HttpStream *stream);
 void stremio_http_close(HttpStream *stream);
 void stremio_http_stats(std::uint64_t *out);
 
+// A torrent, which takes the place of the web address and answers in the same way.
+struct TorrentStream;
+TorrentStream *stremio_torrent_open(const char *source);
+std::int64_t stremio_torrent_read(TorrentStream *stream, std::uint8_t *buffer, std::size_t length);
+void stremio_torrent_seek(TorrentStream *stream, std::uint64_t position);
+std::int64_t stremio_torrent_size(const TorrentStream *stream);
+void stremio_torrent_close(TorrentStream *stream);
+std::int32_t stremio_torrent_progress(const TorrentStream *stream, std::uint64_t *done, std::uint64_t *total);
+std::size_t stremio_torrent_last_error(char *out, std::size_t capacity);
+// Ends the wait a torrent that is being opened is in, so backing out of a stream that
+// has found no peers does not wait for it to give up on its own.
+void stremio_torrent_cancel(void);
+
 }
 
 void log_line(const char *format, ...);
@@ -331,11 +344,30 @@ struct Picture
     int serial;
 };
 
+// Whether an address is a torrent: the core hands over a magnet: link in place of the
+// web address for a stream that carries one.
+bool is_torrent(const std::string &url)
+{
+    constexpr char kMagnet[] = "magnet:";
+    if (url.size() < sizeof kMagnet - 1)
+        return false;
+    for (std::size_t letter = 0; letter + 1 < sizeof kMagnet; ++letter)
+    {
+        char given = url[letter];
+        if (given >= 'A' && given <= 'Z')
+            given = static_cast<char>(given - 'A' + 'a');
+        if (given != kMagnet[letter])
+            return false;
+    }
+    return true;
+}
+
 // A video file read from a web address through FFmpeg's demuxers.
 struct Input
 {
     std::atomic<bool> *stop = nullptr;
     HttpStream *http = nullptr;
+    TorrentStream *torrent = nullptr; // a torrent instead of a web address (only one is open)
     std::int64_t position = 0;
     AVIOContext *io = nullptr;
     AVFormatContext *format = nullptr;
@@ -349,7 +381,9 @@ struct Input
             av_freep(&io->buffer);
             avio_context_free(&io);
         }
+        // Only one of the two was opened; each takes a stream that was never opened.
         stremio_http_close(http);
+        stremio_torrent_close(torrent);
     }
 
     static int read(void *opaque, std::uint8_t *buffer, int size)
@@ -357,8 +391,7 @@ struct Input
         auto *self = static_cast<Input *>(opaque);
         if (*self->stop)
             return AVERROR_EXIT;
-        const std::int64_t count =
-            stremio_http_read(self->http, buffer, static_cast<std::size_t>(size));
+        const std::int64_t count = self->read_at(buffer, static_cast<std::size_t>(size));
         if (count < 0)
             return AVERROR(EIO);
         if (count == 0)
@@ -370,7 +403,7 @@ struct Input
     static std::int64_t seek(void *opaque, std::int64_t offset, int whence)
     {
         auto *self = static_cast<Input *>(opaque);
-        const std::int64_t size = stremio_http_size(self->http);
+        const std::int64_t size = self->file_size();
         if (whence & AVSEEK_SIZE)
             return size >= 0 ? size : AVERROR(ENOSYS);
         std::int64_t target = offset;
@@ -391,7 +424,7 @@ struct Input
         }
         if (target < 0)
             return AVERROR(EINVAL);
-        stremio_http_seek(self->http, static_cast<std::uint64_t>(target));
+        self->seek_to(static_cast<std::uint64_t>(target));
         self->position = target;
         return target;
     }
@@ -399,17 +432,37 @@ struct Input
     // Opens the address and reads what streams the file has. On failure `why` says what
     // went wrong. `browsing` is for a reader that only jumps about the file for single
     // pictures: it reads in pieces, and skips the probing of the streams that playing
-    // needs (the file's header says enough to decode a picture).
+    // needs (the file's header says enough to decode a picture). A torrent has no reader
+    // of its own for that, so browsing one is not offered.
     bool open(const std::string &url, std::atomic<bool> &stop_flag, std::string &why,
               bool browsing = false)
     {
         stop = &stop_flag;
-        http = browsing ? stremio_http_open_pieces(url.c_str(), kThumbPiece)
-                        : stremio_http_open(url.c_str());
-        if (http == nullptr)
+        if (is_torrent(url))
         {
-            why = "The stream's address did not answer.";
-            return false;
+            if (browsing)
+            {
+                why = "The scrubbing pictures are not made for a torrent yet.";
+                return false;
+            }
+            torrent = stremio_torrent_open(url.c_str());
+            if (torrent == nullptr)
+            {
+                char error[256] = {};
+                stremio_torrent_last_error(error, sizeof error);
+                why = std::string{"The torrent could not be started: "} + error;
+                return false;
+            }
+        }
+        else
+        {
+            http = browsing ? stremio_http_open_pieces(url.c_str(), kThumbPiece)
+                            : stremio_http_open(url.c_str());
+            if (http == nullptr)
+            {
+                why = "The stream's address did not answer.";
+                return false;
+            }
         }
         const int buffer_size = browsing ? kThumbIoBuffer : kIoBuffer;
         auto *buffer = static_cast<std::uint8_t *>(av_malloc(buffer_size));
@@ -469,6 +522,37 @@ struct Input
         return format->start_time != AV_NOPTS_VALUE
                    ? static_cast<double>(format->start_time) / AV_TIME_BASE
                    : 0.0;
+    }
+
+  private:
+    // The reading, seeking and measuring of whichever of the two sources is open: a
+    // torrent and a web stream are asked in exactly the same way.
+    std::int64_t read_at(std::uint8_t *buffer, std::size_t length)
+    {
+        return torrent != nullptr ? stremio_torrent_read(torrent, buffer, length)
+                                  : stremio_http_read(http, buffer, length);
+    }
+
+    void seek_to(std::uint64_t position)
+    {
+        if (torrent != nullptr)
+            stremio_torrent_seek(torrent, position);
+        else
+            stremio_http_seek(http, position);
+    }
+
+    std::int64_t file_size() const
+    {
+        return torrent != nullptr ? stremio_torrent_size(torrent) : stremio_http_size(http);
+    }
+
+    // Whether the file being read is a torrent, which changes what a failed read means:
+    // a web stream that stops is a film that ended, a torrent that stops is a download
+    // that died, and saying the film ended would mark it watched. It is not named after
+    // the free `is_torrent` above, which a member of this name would hide from `open`.
+    bool reading_a_torrent() const
+    {
+        return torrent != nullptr;
     }
 };
 
@@ -1266,6 +1350,10 @@ struct Player::Session
             {
                 if (result != AVERROR_EOF && !stop)
                     note("reading stopped: %s", ffmpeg_error(result).c_str());
+                // A torrent that has stopped sending is not the end of the film, and
+                // saying it is would post the whole thing as watched.
+                if (result != AVERROR_EOF && !stop && input.reading_a_torrent())
+                    fail("The torrent stopped sending.");
                 std::lock_guard lock{mutex};
                 reader_done = true;
                 wake.notify_all();
@@ -1932,6 +2020,9 @@ void Player::close()
     std::shared_ptr<Session> session = std::move(session_);
     session_.reset();
     session->stop = true;
+    // A torrent that is still finding its peers is waiting in the open; it is told to stop
+    // waiting as well, so the thread it is on is free to come back at once.
+    stremio_torrent_cancel();
     {
         std::lock_guard lock{session->mutex};
         session->wake.notify_all();

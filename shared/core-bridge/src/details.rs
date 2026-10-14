@@ -2,6 +2,7 @@
 //! its episodes, and the streams add-ons offer for it.
 
 use serde::Serialize;
+use std::borrow::Cow;
 
 use stremio_core::constants::{GENRES_LINK_CATEGORY, IMDB_LINK_CATEGORY};
 use stremio_core::models::common::Loadable;
@@ -12,6 +13,7 @@ use stremio_core::types::addon::ResourcePath;
 use stremio_core::types::resource::{MetaItem, StreamSource};
 
 use crate::model::{Ps5Model, Ps5ModelField};
+use crate::torrent::{magnet::Magnet, PLAYABLE};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,9 +69,11 @@ struct StreamGroup<'a> {
 struct Stream<'a> {
     name: Option<&'a str>,
     description: Option<&'a str>,
-    /// The address to play, for streams this app can play: direct web links. Torrents,
-    /// YouTube ids and external links have none.
-    url: Option<&'a str>,
+    /// The address to play, for streams this app can play: direct web links, and a torrent
+    /// as the `magnet:` link its reader opens where the player has one. YouTube ids and
+    /// external links have none. A torrent's link is written for the stream, so it is
+    /// owned, while a web link is the add-on's own and is only borrowed.
+    url: Option<Cow<'a, str>>,
     /// Why a stream without an address cannot be played here.
     unsupported: Option<&'static str>,
     /// The file's size in bytes, when the add-on gives it.
@@ -104,6 +108,29 @@ fn links<'a>(item: &'a MetaItem, category: &str) -> Vec<&'a str> {
         .collect()
 }
 
+/// What a torrent stream offers: the `magnet:` address a player with a torrent reader is
+/// given, and nothing against it. Only the hash is needed for the link to name a torrent,
+/// so every part an add-on may leave out is simply left out of it: no trackers, no file,
+/// no name and no size still make an address worth offering.
+fn torrent_stream(
+    info_hash: &[u8; 20],
+    announce: &[String],
+    file_idx: Option<u16>,
+    file_must_include: &[String],
+    name: Option<&str>,
+    video_size: Option<u64>,
+) -> (Option<String>, Option<&'static str>) {
+    let url = Magnet::build(
+        info_hash,
+        announce,
+        name,
+        video_size,
+        file_idx.map(usize::from),
+        file_must_include,
+    );
+    (Some(url), None)
+}
+
 /// The details as the UI draws them, or `None` when no title is selected.
 pub fn details(model: &Ps5Model) -> Option<Details<'_>> {
     let meta = &model.meta_details;
@@ -135,15 +162,39 @@ pub fn details(model: &Ps5Model) -> Option<Details<'_>> {
                     streams
                         .iter()
                         .map(|stream| {
+                            // A torrent is played from the address its reader opens, which is
+                            // written here, before the match, so that it can be moved into the
+                            // stream rather than borrowed from something that goes away.
+                            let torrent = match &stream.source {
+                                StreamSource::Torrent {
+                                    info_hash,
+                                    file_idx,
+                                    announce,
+                                    file_must_include,
+                                } if PLAYABLE => Some(torrent_stream(
+                                    info_hash,
+                                    announce,
+                                    *file_idx,
+                                    file_must_include,
+                                    stream.name.as_deref(),
+                                    stream.behavior_hints.video_size,
+                                )),
+                                _ => None,
+                            };
                             let (url, unsupported) = match &stream.source {
                                 StreamSource::Url { url }
                                     if matches!(url.scheme(), "http" | "https") =>
                                 {
-                                    (Some(url.as_str()), None)
+                                    (Some(Cow::Borrowed(url.as_str())), None)
                                 }
                                 StreamSource::Url { .. } => (None, Some("Unsupported link")),
                                 StreamSource::YouTube { .. } => (None, Some("YouTube")),
-                                StreamSource::Torrent { .. } => (None, Some("Torrent")),
+                                // The address the player's torrent reader is given, or the
+                                // refusal an app without one still shows.
+                                StreamSource::Torrent { .. } => match torrent {
+                                    Some((url, unsupported)) => (url.map(Cow::Owned), unsupported),
+                                    None => (None, Some("Torrent")),
+                                },
                                 StreamSource::External { .. } => (None, Some("Opens elsewhere")),
                                 _ => (None, Some("Unsupported")),
                             };
@@ -239,4 +290,96 @@ pub fn details(model: &Ps5Model) -> Option<Details<'_>> {
             stream_groups,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A real info hash and the same forty characters of it in writing.
+    const HEX: &str = "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c";
+    const HASH: [u8; 20] = [
+        0xdd, 0x82, 0x55, 0xec, 0xdc, 0x7c, 0xa5, 0x5f, 0xb0, 0xbb, 0xf8, 0x13, 0x23, 0xd8, 0x70,
+        0x62, 0xdb, 0x1f, 0x6d, 0x1c,
+    ];
+
+    /// A magnet parameter's value as it goes on a wire, which is how it is looked for in
+    /// a written link.
+    fn written(value: &str) -> String {
+        String::from_utf8(crate::torrent::magnet::percent_encode(value)).expect("as it was written")
+    }
+
+    #[test]
+    fn a_torrent_stream_is_given_the_address_its_reader_opens() {
+        let trackers = vec![
+            "udp://tracker.opentrackr.org:1337/announce".to_owned(),
+            "https://tracker.example.org:8443/announce".to_owned(),
+        ];
+        let parts = vec!["Sample".to_owned(), "1080p".to_owned()];
+        let (url, unsupported) = torrent_stream(
+            &HASH,
+            &trackers,
+            Some(3),
+            &parts,
+            Some("Some Film"),
+            Some(8_589_934_592),
+        );
+        assert_eq!(unsupported, None);
+
+        let url = url.expect("a torrent is given an address to play");
+        assert!(url.starts_with("magnet:?xt=urn:btih:"), "{url}");
+        assert!(url.contains(HEX), "{url} does not name the torrent");
+        for tracker in &trackers {
+            assert!(
+                url.contains(&format!("tr={}", written(tracker))),
+                "{url} has no tracker for {tracker}"
+            );
+        }
+        assert!(
+            url.contains(&format!("dn={}", written("Some Film"))),
+            "{url}"
+        );
+        assert!(url.contains("fileIdx=3"), "{url}");
+        assert!(url.contains("fileMustInclude=Sample"), "{url}");
+        assert!(url.contains("fileMustInclude=1080p"), "{url}");
+    }
+
+    #[test]
+    fn a_torrent_with_nothing_but_its_hash_is_still_a_magnet() {
+        let (url, unsupported) = torrent_stream(&HASH, &[], None, &[], None, None);
+        assert_eq!(unsupported, None);
+        assert_eq!(
+            url.as_deref(),
+            Some(format!("magnet:?xt=urn:btih:{HEX}").as_str())
+        );
+    }
+
+    #[test]
+    fn a_torrent_without_a_file_or_a_size_leaves_both_out() {
+        let trackers = vec!["udp://tracker.example.org:1337/announce".to_owned()];
+        let (url, unsupported) = torrent_stream(&HASH, &trackers, None, &[], None, None);
+        assert_eq!(unsupported, None);
+
+        let url = url.expect("a torrent is given an address to play");
+        assert_eq!(url.matches("tr=").count(), trackers.len(), "{url}");
+        assert!(!url.contains("fileIdx="), "{url} names a file");
+        assert!(
+            !url.contains("fileMustInclude="),
+            "{url} names a part of a file"
+        );
+        assert!(!url.contains("dn="), "{url} carries a name");
+        assert!(!url.contains("xl="), "{url} has a size");
+    }
+
+    #[test]
+    fn every_tracker_an_add_on_gives_is_written() {
+        let trackers = vec![
+            "udp://tracker.one.example:1337/announce".to_owned(),
+            "udp://tracker.two.example:1337/announce".to_owned(),
+            "https://tracker.three.example/announce".to_owned(),
+        ];
+        let (url, _) = torrent_stream(&HASH, &trackers, Some(0), &["Part".to_owned()], None, None);
+        let url = url.expect("a torrent is given an address to play");
+        assert_eq!(url.matches("tr=").count(), 3, "{url}");
+    }
 }

@@ -8,6 +8,7 @@
 #include "app.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 
 #include "draw_util.hpp"
@@ -26,13 +27,14 @@ namespace
 constexpr const char *kSections[] = {"Account", "Playback", "Subtitles", "Auto-calibrate", "Interface"};
 constexpr int kSectionCount = 5;
 // How many settings each section has.
-constexpr int kRows[kSectionCount] = {1, 4, 4, 3, 3};
-constexpr const char *kLabels[kSectionCount][4] = {
-    {"", "", "", ""},
-    {"Audio language", "Subtitles", "Trailers on the home screen", "Maximum stream quality"},
-    {"Size", "Background", "Colour", "Weight"},
-    {"Speech model", "Download Status", "Calibration Offset", ""},
-    {"Sound effects", "Switch UI automatically", "Handheld UI", ""},
+constexpr int kRows[kSectionCount] = {1, 5, 4, 3, 3};
+constexpr const char *kLabels[kSectionCount][5] = {
+    {"", "", "", "", ""},
+    {"Audio language", "Subtitles", "Trailers on the home screen", "Maximum stream quality",
+     "Downloaded films"},
+    {"Size", "Background", "Colour", "Weight", ""},
+    {"Speech model", "Download Status", "Calibration Offset", "", ""},
+    {"Sound effects", "Switch UI automatically", "Handheld UI", "", ""},
 };
 
 constexpr float kRowHeight = units(3.25f), kSettingGap = units(0.6f);
@@ -75,6 +77,20 @@ void App::change_setting(int section, int row, int step)
         quality_limit_ = kLimits[((at + step) % kCount + kCount) % kCount];
         if (quality_handler_)
             quality_handler_(quality_limit_);
+    }
+    else if (section == 1 && row == 4)
+    {
+        // No limit, then how much room downloaded films may take (binary gigabytes, which
+        // is what the card measures in).
+        constexpr std::uint64_t kSizes[] = {0, 2ull << 30, 4ull << 30, 8ull << 30, 16ull << 30, 32ull << 30};
+        constexpr int kCount = static_cast<int>(std::size(kSizes));
+        int at = 0;
+        for (int index = 0; index < kCount; ++index)
+            if (kSizes[index] == torrent_limit_)
+                at = index;
+        torrent_limit_ = kSizes[((at + step) % kCount + kCount) % kCount];
+        if (torrent_limit_handler_)
+            torrent_limit_handler_(torrent_limit_);
     }
     else if (section == 1)
     {
@@ -138,6 +154,8 @@ bool App::setting_shown(int section, int row) const
         return features_.trailers;
     if (section == 1 && row == 3)
         return features_.quality_limit;
+    if (section == 1 && row == 4)
+        return features_.torrents;
     return true;
 }
 
@@ -212,6 +230,9 @@ std::string App::setting_value(int section, int row) const
                                                        : language_name(account_.subtitles_language);
         if (row == 3)
             return quality_limit_ == 0 ? std::string{"No limit"} : std::to_string(quality_limit_) + "p";
+        if (row == 4)
+            return torrent_limit_ == 0 ? std::string{"No limit"}
+                                       : std::to_string(torrent_limit_ >> 30) + " GB";
         return trailers_ ? "On" : "Off";
     }
     if (section == 2)

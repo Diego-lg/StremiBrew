@@ -14,6 +14,7 @@ mod pages;
 mod playback;
 mod stream_io;
 mod subtitles;
+pub mod torrent;
 pub mod trailer;
 
 use std::collections::VecDeque;

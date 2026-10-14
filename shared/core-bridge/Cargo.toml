@@ -21,6 +21,10 @@ chrono = "0.4"
 once_cell = "1"
 # Blocking HTTPS client with a pure-Rust TLS stack and bundled root certificates.
 ureq = { version = "2", default-features = false, features = ["tls"] }
+# The torrent client: SHA-1 for checking the pieces peers send, and random bytes for a
+# peer id.
+sha1 = "0.10"
+getrandom = "0.2"
 
 # The Switch: the `getrandom` crate does not know it, and is given the console's random
 # number generator (see src/horizon.rs).
